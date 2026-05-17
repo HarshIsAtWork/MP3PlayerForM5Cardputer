@@ -1,1 +1,4 @@
 /arduino-ide-files
+/.pio
+/.piohome
+/.vscode

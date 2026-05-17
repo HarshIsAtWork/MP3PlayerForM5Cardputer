@@ -2,6 +2,7 @@
 /// Made by: Sanchit Minda() | Github/sanchitminda
 /// Fully Functional OOP & State Machine Architecture
 //////////////////////////////////////////////
+#include <Arduino.h>
 #include <vector>
 #include <M5Unified.h>
 #include <M5Cardputer.h>
@@ -21,6 +22,7 @@
 #include <AudioGeneratorAAC.h>
 #include <AudioGeneratorWAV.h>
 #include <AudioFileSourceBuffer.h>
+#include "theme_manager.h"
 // ==========================================
 // CONSTANTS & CONFIG
 // ==========================================
@@ -36,42 +38,11 @@
 #define HEADER_HEIGHT 20
 #define BOTTOM_BAR_HEIGHT 18
 #define MAX_VISIBLE_ROWS 6  
-
-// --- DYNAMIC COLORS & THEMES ---
-uint16_t C_BG_DARK, C_BG_LIGHT, C_HEADER, C_ACCENT, C_PLAYING, C_HIGHLIGHT, C_TEXT_MAIN, C_TEXT_DIM;
-
-const int NUM_THEMES = 4;
-const char* themeLabels[] = { "Gunmetal Blue", "Cyberpunk", "Retro Amber", "Hacker Green" };
 const int NUM_VIS_MODES = 4;
 const char* visModeLabels[] = { "Classic Bars", "Waveform Line", "Circular Spikes", "OFF" };
 
-void applyTheme(int index) {
-    switch(index) {
-        case 0: // Gunmetal Blue (Original)
-            C_BG_DARK = 0x1002; C_BG_LIGHT = 0x2124; C_HEADER = 0x18E3;
-            C_ACCENT = 0x05BF; C_PLAYING = 0x07E0; C_HIGHLIGHT = 0xF81F;
-            C_TEXT_MAIN = 0xFFFF; C_TEXT_DIM = 0x9492;
-            break;
-        case 1: // Cyberpunk
-            C_BG_DARK = 0x0803; C_BG_LIGHT = 0x1866; C_HEADER = 0xA013;
-            C_ACCENT = 0x07FF; C_PLAYING = 0xFFE0; C_HIGHLIGHT = 0xF800;
-            C_TEXT_MAIN = 0xFFFF; C_TEXT_DIM = 0x7BEF;
-            break;
-        case 2: // Retro Amber
-            C_BG_DARK = TFT_BLACK; C_BG_LIGHT = 0x2104; C_HEADER = 0x6A00; 
-            C_ACCENT = 0xFDA0; C_PLAYING = TFT_ORANGE; C_HIGHLIGHT = TFT_RED;
-            C_TEXT_MAIN = 0xFEA0; C_TEXT_DIM = 0xA340;
-            break;
-        case 3: // Hacker Green
-            C_BG_DARK = 0x0000; C_BG_LIGHT = 0x0180; C_HEADER = 0x0320; 
-            C_ACCENT = 0x07E0; C_PLAYING = 0x07FF; C_HIGHLIGHT = TFT_WHITE;
-            C_TEXT_MAIN = 0x07E0; C_TEXT_DIM = 0x03E0;
-            break;
-    }
-}
-
 enum LoopState { NO_LOOP, LOOP_ALL, LOOP_ONE };
-enum UIState { UI_PLAYER, UI_SETTINGS, UI_HELP, UI_WIFI_SCAN, UI_TEXT_INPUT, UI_FOLDER_SELECT, UI_SEARCH };
+enum UIState { UI_PLAYER, UI_SETTINGS, UI_HELP, UI_WIFI_SCAN, UI_TEXT_INPUT, UI_FOLDER_SELECT, UI_SEARCH, UI_THEME_DESIGNER };
 
 const uint32_t sampleRateValues[] = { 44100, 48000, 88200, 96000, 128000 };
 const char* sampleRateLabels[] = { "44.1k", "48k", "88.2k", "96k", "128k" };
@@ -109,7 +80,7 @@ const char* helpLines[] = {
   "Share your suggestions!"
 };
 const int numHelpLines = 28;
-const int numSettings = 16;   // +1 for Playlist Mode
+const int numSettings = 17;
 
 // ==========================================
 // GLOBALS
@@ -149,6 +120,8 @@ String enteredText = "";
 
 // Active playlist path (changes when user picks a folder)
 String g_activePlaylist = PLAYLIST_FILE;
+int g_themeEditorColorIndex = 0;
+int g_themeEditorChannelIndex = 0;
 
 // Search globals
 String g_searchQuery = "";
@@ -224,6 +197,28 @@ static int16_t raw_data[WAVE_SIZE * 2];
 // ==========================================
 class ConfigManager {
 public:
+    static void loadCustomThemeValues() {
+        const char channelIds[] = { 'r', 'g', 'b' };
+        for (int i = 0; i < NUM_THEME_COLORS; i++) {
+            for (int c = 0; c < 3; c++) {
+                char key[8];
+                snprintf(key, sizeof(key), "c%d%c", i, channelIds[c]);
+                g_customThemeRGB[i][c] = constrain(preferences.getInt(key, g_customThemeRGB[i][c]), 0, 256);
+            }
+        }
+    }
+
+    static void saveCustomThemeValues() {
+        const char channelIds[] = { 'r', 'g', 'b' };
+        for (int i = 0; i < NUM_THEME_COLORS; i++) {
+            for (int c = 0; c < 3; c++) {
+                char key[8];
+                snprintf(key, sizeof(key), "c%d%c", i, channelIds[c]);
+                preferences.putInt(key, constrain(g_customThemeRGB[i][c], 0, 256));
+            }
+        }
+    }
+
     static void load() {
         preferences.begin("sam_music", true);
         userSettings.brightness = preferences.getInt("brightness", 100);
@@ -243,6 +238,7 @@ public:
         userSettings.visMode = preferences.getInt("visMode", 0);
         userSettings.seek = preferences.getInt("seek", 5);
         userSettings.currentFolder = preferences.getString("curFolder", "");
+        loadCustomThemeValues();
         preferences.end();
         
         if(userSettings.apSSID.length() == 0) userSettings.apSSID = "Cardputer";
@@ -269,6 +265,7 @@ public:
         preferences.putInt("visMode", userSettings.visMode);
         preferences.putInt("seek", userSettings.seek);
         preferences.putString("curFolder", userSettings.currentFolder);
+        saveCustomThemeValues();
         preferences.end();
     }
 
@@ -283,7 +280,13 @@ public:
             file.println(userSettings.wifiPass); file.println(userSettings.isAPMode ? 1 : 0);
             file.println(userSettings.apSSID); file.println(userSettings.apPass);
             file.println(userSettings.powerSaverMode); file.println(userSettings.seek);
-            file.println(userSettings.currentFolder); file.close();
+            file.println(userSettings.currentFolder);
+            for (int i = 0; i < NUM_THEME_COLORS; i++) {
+                file.println(g_customThemeRGB[i][0]);
+                file.println(g_customThemeRGB[i][1]);
+                file.println(g_customThemeRGB[i][2]);
+            }
+            file.close();
             
             M5Cardputer.Display.fillScreen(C_BG_DARK); M5Cardputer.Display.setCursor(10, 40);
             M5Cardputer.Display.setTextColor(C_PLAYING); M5Cardputer.Display.print("Exported to SD!"); delay(1000);
@@ -312,7 +315,13 @@ public:
             if(file.available()) userSettings.powerSaverMode = file.readStringUntil('\n').toInt();
             if(file.available()) userSettings.seek = file.readStringUntil('\n').toInt();
             if(file.available()) { userSettings.currentFolder = file.readStringUntil('\n'); userSettings.currentFolder.trim(); }
+            for (int i = 0; i < NUM_THEME_COLORS; i++) {
+                for (int c = 0; c < 3; c++) {
+                    if (file.available()) g_customThemeRGB[i][c] = constrain(file.readStringUntil('\n').toInt(), 0, 256);
+                }
+            }
             file.close();
+            if (userSettings.themeIndex == 4) applyCustomTheme();
             save(); M5Cardputer.Display.setBrightness(userSettings.brightness);
             M5Cardputer.Display.fillScreen(C_BG_DARK); M5Cardputer.Display.setCursor(10, 40);
             M5Cardputer.Display.setTextColor(C_PLAYING); M5Cardputer.Display.print("Imported from SD!"); delay(1000);
@@ -609,6 +618,7 @@ public:
     static int wifiScrollOffset;
     static int wifiNetworkCount;
     static int helpScrollOffset;
+    static const char* themeChannelLabels[3];
 
     // Folder browser state
     static std::vector<String> folderList;
@@ -1011,12 +1021,13 @@ public:
                 case 7: M5Cardputer.Display.printf("Power Saver: %s", powerModeLabels[userSettings.powerSaverMode]); break;
                 case 8: M5Cardputer.Display.printf("Theme: %s", themeLabels[userSettings.themeIndex]); break;
                 case 9: M5Cardputer.Display.printf("Visualizer: %s", visModeLabels[userSettings.visMode]); break;
-                case 10: M5Cardputer.Display.print("> Setup Wi-Fi Network"); break; 
-                case 11: M5Cardputer.Display.print("> Setup AP (Host)"); break;
-                case 12: M5Cardputer.Display.print("[ RESCAN LIBRARY ]"); break;    
-                case 13: M5Cardputer.Display.print("[ EXPORT CONFIG TO SD ]"); break; 
-                case 14: M5Cardputer.Display.print("[ IMPORT FROM SD ]"); break;
-                case 15: {
+                case 10: M5Cardputer.Display.print("> Theme Designer"); break;
+                case 11: M5Cardputer.Display.print("> Setup Wi-Fi Network"); break; 
+                case 12: M5Cardputer.Display.print("> Setup AP (Host)"); break;
+                case 13: M5Cardputer.Display.print("[ RESCAN LIBRARY ]"); break;    
+                case 14: M5Cardputer.Display.print("[ EXPORT CONFIG TO SD ]"); break; 
+                case 15: M5Cardputer.Display.print("[ IMPORT FROM SD ]"); break;
+                case 16: {
                     String flabel = userSettings.currentFolder == "" ? "All Music" : userSettings.currentFolder;
                     if (flabel.startsWith("/")) flabel = flabel.substring(1);
                     if (flabel.length() > 12) flabel = flabel.substring(0, 12) + "~";
@@ -1024,6 +1035,70 @@ public:
                 }
             }
         }
+    }
+
+    static void drawThemeDesigner() {
+        M5Cardputer.Display.fillScreen(C_BG_DARK);
+        M5Cardputer.Display.fillRect(0, 0, M5Cardputer.Display.width(), HEADER_HEIGHT, C_HEADER);
+        M5Cardputer.Display.setFont(&fonts::Font0);
+        M5Cardputer.Display.setTextColor(C_TEXT_MAIN, C_HEADER);
+        M5Cardputer.Display.setCursor(5, 5);
+        M5Cardputer.Display.print("Theme Designer");
+
+        int previewX = 6, previewY = HEADER_HEIGHT + 4;
+        int previewW = 82, previewH = 70;
+        M5Cardputer.Display.fillRoundRect(previewX, previewY, previewW, previewH, 4, C_BG_LIGHT);
+        M5Cardputer.Display.drawRoundRect(previewX, previewY, previewW, previewH, 4, C_ACCENT);
+        M5Cardputer.Display.fillRect(previewX + 4, previewY + 4, previewW - 8, 12, C_HEADER);
+        M5Cardputer.Display.setTextColor(C_TEXT_MAIN, C_HEADER);
+        M5Cardputer.Display.setCursor(previewX + 8, previewY + 7);
+        M5Cardputer.Display.print("Preview");
+        M5Cardputer.Display.fillRect(previewX + 4, previewY + 20, previewW - 8, 24, C_BG_DARK);
+        M5Cardputer.Display.setTextColor(C_PLAYING, C_BG_DARK);
+        M5Cardputer.Display.setCursor(previewX + 8, previewY + 25);
+        M5Cardputer.Display.print("PLAY");
+        M5Cardputer.Display.setTextColor(C_TEXT_MAIN, C_BG_DARK);
+        M5Cardputer.Display.setCursor(previewX + 8, previewY + 36);
+        M5Cardputer.Display.print("Song Title");
+        M5Cardputer.Display.fillRect(previewX + 8, previewY + 50, 44, 4, C_BG_DARK);
+        M5Cardputer.Display.fillRect(previewX + 8, previewY + 50, 26, 4, C_HIGHLIGHT);
+        M5Cardputer.Display.fillRect(previewX + 8, previewY + 60, 28, 6, C_ACCENT);
+        M5Cardputer.Display.fillRect(previewX + 42, previewY + 60, 18, 6, C_TEXT_DIM);
+
+        int selectedColor = g_themeEditorColorIndex;
+        int rightX = 96;
+        int swatchColor = rgb888To565(g_customThemeRGB[selectedColor][0], g_customThemeRGB[selectedColor][1], g_customThemeRGB[selectedColor][2]);
+        M5Cardputer.Display.setTextColor(C_TEXT_MAIN, C_BG_DARK);
+        M5Cardputer.Display.setCursor(rightX, HEADER_HEIGHT + 6);
+        M5Cardputer.Display.print(themeColorLabels[selectedColor]);
+        M5Cardputer.Display.fillRoundRect(M5Cardputer.Display.width() - 34, HEADER_HEIGHT + 4, 24, 16, 3, swatchColor);
+        M5Cardputer.Display.drawRoundRect(M5Cardputer.Display.width() - 34, HEADER_HEIGHT + 4, 24, 16, 3, C_TEXT_MAIN);
+
+        int listY = HEADER_HEIGHT + 24;
+        for (int i = 0; i < 3; i++) {
+            bool isSelected = (i == g_themeEditorChannelIndex);
+            int value = g_customThemeRGB[selectedColor][i];
+            int barX = rightX + 16;
+            int barY = listY + (i * 16) + 4;
+            int barW = 92;
+            uint16_t fillColor = (i == 0) ? TFT_RED : ((i == 1) ? TFT_GREEN : TFT_BLUE);
+
+            if (isSelected) {
+                M5Cardputer.Display.fillRect(rightX - 2, listY + (i * 16) - 1, 136, 14, C_BG_LIGHT);
+            }
+
+            M5Cardputer.Display.setTextColor(isSelected ? C_HIGHLIGHT : C_TEXT_MAIN, C_BG_DARK);
+            M5Cardputer.Display.setCursor(rightX, listY + (i * 16));
+            M5Cardputer.Display.printf("%s:%3d", themeChannelLabels[i], value);
+            M5Cardputer.Display.drawRect(barX, barY, barW, 6, C_TEXT_DIM);
+            M5Cardputer.Display.fillRect(barX + 1, barY + 1, min(barW - 2, (constrain(value, 0, 256) * (barW - 2)) / 256), 4, fillColor);
+        }
+
+        int footerY = M5Cardputer.Display.height() - BOTTOM_BAR_HEIGHT;
+        M5Cardputer.Display.fillRect(0, footerY, M5Cardputer.Display.width(), BOTTOM_BAR_HEIGHT, C_HEADER);
+        M5Cardputer.Display.setTextColor(C_TEXT_DIM, C_HEADER);
+        M5Cardputer.Display.setCursor(5, footerY + 4);
+        M5Cardputer.Display.print(";/.:Color Enter:RGB /,:+/- `:Back");
     }
 
     // -----------------------------------------------
@@ -1161,6 +1236,7 @@ public:
 int UIManager::settingsCursor = 0; int UIManager::menuScrollOffset = 0; bool UIManager::showVisualizer = true;
 int UIManager::wifiCursor = 0; int UIManager::wifiScrollOffset = 0; int UIManager::wifiNetworkCount = 0;
 int UIManager::helpScrollOffset = 0;
+const char* UIManager::themeChannelLabels[3] = { "R", "G", "B" };
 std::vector<String> UIManager::folderList;
 int UIManager::folderCursor = 0;
 int UIManager::folderScrollOffset = 0;
@@ -1732,17 +1808,25 @@ void loop() {
                 }
                 else if (M5Cardputer.Keyboard.isKeyPressed(KEY_ENTER)) {
                     switch(UIManager::settingsCursor) {
-                        case 10: // Wi-Fi Setup
+                        case 10: // Theme Designer
+                            captureCurrentThemeToCustom();
+                            userSettings.themeIndex = 4;
+                            applyTheme(userSettings.themeIndex);
+                            g_themeEditorColorIndex = 0;
+                            g_themeEditorChannelIndex = 0;
+                            currentState = UI_THEME_DESIGNER;
+                            UIManager::drawThemeDesigner(); break;
+                        case 11: // Wi-Fi Setup
                             currentState = UI_WIFI_SCAN; WiFi.mode(WIFI_STA); WiFi.disconnect(); delay(100);
                             UIManager::wifiNetworkCount = WiFi.scanNetworks(); UIManager::wifiCursor = 0; UIManager::wifiScrollOffset = 0;
                             UIManager::drawWifiScanner(); break;
-                        case 11: // AP Setup
+                        case 12: // AP Setup
                             currentState = UI_TEXT_INPUT; textInputTarget = 1; enteredText = userSettings.apSSID;
                             UIManager::drawTextInput(); break;
-                        case 12: audioApp.performFullScan(); currentState = UI_PLAYER; UIManager::drawBaseUI(); break;
-                        case 13: ConfigManager::exportToSD(); currentState = UI_PLAYER; UIManager::drawBaseUI(); break;
-                        case 14: ConfigManager::importFromSD(); currentState = UI_PLAYER; UIManager::drawBaseUI(); break;
-                        case 15: // Playlist / Folder Selector
+                        case 13: audioApp.performFullScan(); currentState = UI_PLAYER; UIManager::drawBaseUI(); break;
+                        case 14: ConfigManager::exportToSD(); currentState = UI_PLAYER; UIManager::drawBaseUI(); break;
+                        case 15: ConfigManager::importFromSD(); currentState = UI_PLAYER; UIManager::drawBaseUI(); break;
+                        case 16: // Playlist / Folder Selector
                             UIManager::buildFolderList();
                             currentState = UI_FOLDER_SELECT;
                             UIManager::drawFolderSelect();
@@ -1846,6 +1930,34 @@ void loop() {
                     if (redraw) UIManager::rebuildSearchResults();
                 }
                 if (redraw && currentState == UI_SEARCH) UIManager::drawSearch();
+                }
+                break;
+
+            case UI_THEME_DESIGNER:
+                if (M5Cardputer.Keyboard.isKeyPressed('`')) {
+                    ConfigManager::save();
+                    currentState = UI_SETTINGS;
+                    UIManager::drawSettings();
+                }
+                else if (M5Cardputer.Keyboard.isKeyPressed(';')) {
+                    g_themeEditorColorIndex = (g_themeEditorColorIndex - 1 + NUM_THEME_COLORS) % NUM_THEME_COLORS;
+                    UIManager::drawThemeDesigner();
+                }
+                else if (M5Cardputer.Keyboard.isKeyPressed('.')) {
+                    g_themeEditorColorIndex = (g_themeEditorColorIndex + 1) % NUM_THEME_COLORS;
+                    UIManager::drawThemeDesigner();
+                }
+                else if (M5Cardputer.Keyboard.isKeyPressed(KEY_ENTER)) {
+                    g_themeEditorChannelIndex = (g_themeEditorChannelIndex + 1) % 3;
+                    UIManager::drawThemeDesigner();
+                }
+                else if (M5Cardputer.Keyboard.isKeyPressed('/') || M5Cardputer.Keyboard.isKeyPressed(',')) {
+                    bool increase = M5Cardputer.Keyboard.isKeyPressed('/');
+                    int& channelValue = g_customThemeRGB[g_themeEditorColorIndex][g_themeEditorChannelIndex];
+                    channelValue = constrain(channelValue + (increase ? 1 : -1), 0, 256);
+                    userSettings.themeIndex = 4;
+                    applyTheme(userSettings.themeIndex);
+                    UIManager::drawThemeDesigner();
                 }
                 break;
 
